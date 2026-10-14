@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anatomie d'un stylo</title>
+<style>
+  :root {
+    --accent: #00b386;      /* couleur principale (corps du stylo + boutons) */
+    --ink: #1f2328;
+    --muted: #5f6670;
+    --card: rgba(255,255,255,0.92);
+    --bg1: #f6f7f8;
+    --bg2: #e4e8eb;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    background: radial-gradient(ellipse at 50% 40%, var(--bg1), var(--bg2));
+  }
+  #scene { position: fixed; inset: 0; }
+  canvas { display: block; touch-action: none; }
+
+  .top {
+    position: fixed; top: 16px; left: 16px; right: 16px;
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; justify-content: space-between;
+    pointer-events: none;
+  }
+  .title { pointer-events: auto; }
+  .title h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+  .title p { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; pointer-events: auto; }
+  button {
+    font: inherit; font-size: 13px; font-weight: 600;
+    border: 1px solid rgba(0,0,0,0.12); background: #fff; color: var(--ink);
+    padding: 8px 14px; border-radius: 999px; cursor: pointer;
+    transition: background .2s, color .2s, border-color .2s;
+  }
+  button:hover { border-color: var(--accent); }
+  button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  .chips {
+    position: fixed; left: 16px; right: 16px; bottom: 16px;
+    display: flex; flex-direction: column; gap: 10px; align-items: center;
+    pointer-events: none;
+  }
+  .chip-row { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; pointer-events: auto; }
+  .chip-row button { font-size: 12px; padding: 6px 12px; font-weight: 500; }
+
+  .card {
+    pointer-events: auto;
+    max-width: 520px; width: 100%;
+    background: var(--card); backdrop-filter: blur(8px);
+    border-radius: 14px; padding: 14px 18px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.08);
+    border-left: 4px solid var(--accent);
+    transition: opacity .25s, transform .25s;
+  }
+  .card.hidden { opacity: 0; transform: translateY(8px); pointer-events: none; }
+  .card h2 { margin: 0 0 4px; font-size: 16px; }
+  .card p { margin: 0; font-size: 14px; line-height: 1.45; color: var(--muted); }
+
+  .hint {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, 90px);
+    font-size: 12px; color: var(--muted); pointer-events: none;
+    transition: opacity .6s;
+  }
+</style>
+</head>
+<body>
+<div id="scene"></div>
+
+<div class="top">
+  <div class="title">
+    <h1>Anatomie d'un stylo</h1>
+    <p>Fais tourner l'objet et clique sur une pièce pour la découvrir.</p>
+  </div>
+  <div class="controls">
+    <button id="btnExplode">Vue éclatée</button>
+    <button id="btnRotate" class="on">Rotation auto</button>
+    <button id="btnReset">Réinitialiser</button>
+  </div>
+</div>
+
+<div class="hint" id="hint">Glisser pour tourner, molette ou pincer pour zoomer</div>
+
+<div class="chips">
+  <div class="card hidden" id="card"><h2 id="cardTitle"></h2><p id="cardText"></p></div>
+  <div class="chip-row" id="chips"></div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ---------- Réglages faciles à modifier ---------- */
+const BODY_COLOR = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#00b386';
+const INK_COLOR  = '#1e4fd6';
+
+/* Pièces : libellé, description, et décalage en vue éclatée (repère du stylo, axe Y = longueur) */
+const PARTS = {
+  tip:    { label: 'Pointe et bille', text: "Une minuscule bille métallique tourne au contact du papier et dépose l'encre de façon régulière.", offset: [0, -2.4, 0] },
+  cone:   { label: 'Cône avant', text: "Il guide la pointe, la protège et assure la stabilité de l'écriture.", offset: [0, -2.4, 0] },
+  grip:   { label: 'Grip', text: "Zone de préhension en matière souple : plus de confort et de précision, moins de fatigue.", offset: [0, -1.1, 0] },
+  body:   { label: 'Corps', text: "Il protège le mécanisme et la recharge. C'est aussi la partie qui porte la marque.", offset: [0, 0, 0] },
+  clip:   { label: 'Clip', text: "Permet d'accrocher le stylo à une poche ou à un carnet sans le perdre.", offset: [1.5, 0, 0] },
+  button: { label: 'Bouton poussoir', text: "Une pression sort ou rentre la pointe grâce au mécanisme interne.", offset: [0, 1.8, 0] },
+  refill: { label: 'Recharge', text: "Le réservoir d'encre. On peut la remplacer pour prolonger la vie du stylo.", offset: [-1.7, 0, 0] },
+  spring: { label: 'Ressort', text: "Il ramène la pointe à l'intérieur du corps quand on appuie à nouveau sur le bouton.", offset: [-1.7, -0.6, 0] },
+};
+
+/* ---------- Scène ---------- */
+const container = document.getElementById('scene');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+container.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 200);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 1.2;
+controls.enablePan = false;
+controls.minDistance = 6;
+controls.maxDistance = 60;
+
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(4, 10, 6);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -12, right: 12, top: 12, bottom: -12 });
+scene.add(sun, new THREE.AmbientLight(0xffffff, 0.3));
+
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.ShadowMaterial({ opacity: 0.12 }));
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -2.4;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ---------- Matériaux ---------- */
+const mat = {
+  body:   () => new THREE.MeshPhysicalMaterial({ color: BODY_COLOR, roughness: 0.25, clearcoat: 1, clearcoatRoughness: 0.1 }),
+  metal:  () => new THREE.MeshStandardMaterial({ color: 0xd9dde1, metalness: 1, roughness: 0.18 }),
+  rubber: () => new THREE.MeshStandardMaterial({ color: 0x2a2d31, roughness: 0.85 }),
+  dark:   () => new THREE.MeshStandardMaterial({ color: 0x3a3f45, roughness: 0.4 }),
+  refill: () => new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.2, transmission: 0.6, thickness: 0.2 }),
+  ink:    () => new THREE.MeshStandardMaterial({ color: INK_COLOR, roughness: 0.4 }),
+};
+
+/* ---------- Construction du stylo (le long de l'axe Y, pointe en bas) ---------- */
+const pen = new THREE.Group();
+const groups = {};
+const pickable = [];
+
+function part(key) {
+  const g = new THREE.Group();
+  g.userData.base = new THREE.Vector3();
+  groups[key] = g;
+  pen.add(g);
+  return g;
+}
+function add(key, geometry, material, pos = [0, 0, 0], rot) {
+  const m = new THREE.Mesh(geometry, material);
+  m.position.set(...pos);
+  if (rot) m.rotation.set(...rot);
+  m.castShadow = true;
+  m.userData.part = key;
+  groups[key].add(m);
+  pickable.push(m);
+  return m;
+}
+
+part('tip');
+add('tip', new THREE.CylinderGeometry(0.16, 0.05, 0.6, 48), mat.metal(), [0, -6.7, 0]);
+add('tip', new THREE.SphereGeometry(0.055, 24, 16), mat.metal(), [0, -7.02, 0]);
+
+part('cone');
+add('cone', new THREE.CylinderGeometry(0.42, 0.16, 1.2, 64), mat.dark(), [0, -5.8, 0]);
+
+part('grip');
+const gripMat = mat.rubber();
+add('grip', new THREE.CylinderGeometry(0.46, 0.44, 2.4, 64), gripMat, [0, -4.0, 0]);
+for (let i = 0; i < 9; i++) {
+  add('grip', new THREE.TorusGeometry(0.465, 0.025, 12, 64), gripMat, [0, -5.0 + i * 0.25, 0], [Math.PI / 2, 0, 0]);
+}
+
+part('body');
+add('body', new THREE.CylinderGeometry(0.42, 0.42, 7.8, 64), mat.body(), [0, 1.1, 0]);
+add('body', new THREE.CylinderGeometry(0.43, 0.43, 0.25, 64), mat.metal(), [0, 5.12, 0]);
+add('body', new THREE.CylinderGeometry(0.38, 0.42, 0.5, 64), mat.body(), [0, 5.5, 0]);
+
+part('clip');
+const clipMat = mat.metal();
+add('clip', new THREE.BoxGeometry(0.24, 3.6, 0.07), clipMat, [0, 3.6, 0.55]);
+add('clip', new THREE.BoxGeometry(0.24, 0.3, 0.2), clipMat, [0, 5.3, 0.47]);
+add('clip', new THREE.SphereGeometry(0.1, 24, 16), clipMat, [0, 1.85, 0.52]);
+
+part('button');
+const btnMat = mat.dark();
+add('button', new THREE.CylinderGeometry(0.22, 0.22, 0.6, 48), btnMat, [0, 6.05, 0]);
+add('button', new THREE.SphereGeometry(0.22, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2), btnMat, [0, 6.35, 0]);
+
+part('refill');
+add('refill', new THREE.CylinderGeometry(0.11, 0.11, 9.6, 32), mat.refill(), [0, -0.6, 0]);
+add('refill', new THREE.CylinderGeometry(0.08, 0.08, 6.5, 32), mat.ink(), [0, 0.6, 0]);
+
+part('spring');
+class Helix extends THREE.Curve {
+  getPoint(t) {
+    const turns = 12, r = 0.17, y0 = -5.1, len = 1.6;
+    const a = t * turns * Math.PI * 2;
+    return new THREE.Vector3(Math.cos(a) * r, y0 + t * len, Math.sin(a) * r);
+  }
+}
+add('spring', new THREE.TubeGeometry(new Helix(), 400, 0.022, 8, false), mat.metal());
+
+pen.rotation.z = -Math.PI / 2;   // stylo à l'horizontale
+pen.rotation.x = 0.25;           // léger angle pour montrer le clip
+scene.add(pen);
+
+/* ---------- Interface ---------- */
+const chipsEl = document.getElementById('chips');
+const card = document.getElementById('card');
+const chipBtns = {};
+Object.entries(PARTS).forEach(([key, p]) => {
+  const b = document.createElement('button');
+  b.textContent = p.label;
+  b.onclick = () => select(selected === key ? null : key);
+  chipsEl.appendChild(b);
+  chipBtns[key] = b;
+});
+
+let selected = null;
+function select(key) {
+  selected = key;
+  Object.entries(groups).forEach(([k, g]) => {
+    g.traverse(o => {
+      if (!o.isMesh) return;
+      o.material.emissive?.set(k === key ? BODY_COLOR : 0x000000);
+      o.material.emissiveIntensity = k === key ? 0.35 : 0;
+    });
+  });
+  Object.entries(chipBtns).forEach(([k, b]) => b.classList.toggle('on', k === key));
+  if (key) {
+    document.getElementById('cardTitle').textContent = PARTS[key].label;
+    document.getElementById('cardText').textContent = PARTS[key].text;
+    card.classList.remove('hidden');
+    // les pièces internes ne sont visibles qu'en vue éclatée
+    if ((key === 'refill' || key === 'spring') && !exploded) toggleExplode();
+  } else {
+    card.classList.add('hidden');
+  }
+}
+
+let exploded = false;
+const btnExplode = document.getElementById('btnExplode');
+function toggleExplode() {
+  exploded = !exploded;
+  btnExplode.classList.toggle('on', exploded);
+}
+btnExplode.onclick = toggleExplode;
+
+const btnRotate = document.getElementById('btnRotate');
+btnRotate.onclick = () => {
+  controls.autoRotate = !controls.autoRotate;
+  btnRotate.classList.toggle('on', controls.autoRotate);
+};
+
+document.getElementById('btnReset').onclick = () => {
+  if (exploded) toggleExplode();
+  select(null);
+  fitCamera();
+};
+
+/* ---------- Clic sur une pièce ---------- */
+const ray = new THREE.Raycaster();
+const ptr = new THREE.Vector2();
+let down = null;
+renderer.domElement.addEventListener('pointerdown', e => { down = [e.clientX, e.clientY]; hideHint(); });
+renderer.domElement.addEventListener('pointerup', e => {
+  if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 5) return;
+  const hit = pick(e);
+  select(hit ? (hit === selected ? null : hit) : null);
+});
+renderer.domElement.addEventListener('pointermove', e => {
+  renderer.domElement.style.cursor = pick(e) ? 'pointer' : 'grab';
+});
+function pick(e) {
+  const r = renderer.domElement.getBoundingClientRect();
+  ptr.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(ptr, camera);
+  const hits = ray.intersectObjects(pickable, false);
+  return hits.length ? hits[0].object.userData.part : null;
+}
+
+const hint = document.getElementById('hint');
+function hideHint() { hint.style.opacity = 0; }
+setTimeout(hideHint, 5000);
+
+/* ---------- Cadrage et redimensionnement ---------- */
+function fitCamera() {
+  const halfWidth = 10.5;
+  const vfov = THREE.MathUtils.degToRad(camera.fov / 2);
+  const dist = Math.min(55, Math.max(14, halfWidth / (Math.tan(vfov) * camera.aspect)));
+  camera.position.set(0, dist * 0.28, dist);
+  controls.target.set(0, 0, 0);
+  controls.update();
+}
+function resize() {
+  const w = container.clientWidth, h = container.clientHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', () => { resize(); fitCamera(); });
+resize();
+fitCamera();
+
+/* ---------- Animation ---------- */
+const tmp = new THREE.Vector3();
+renderer.setAnimationLoop(() => {
+  Object.entries(groups).forEach(([k, g]) => {
+    tmp.set(...PARTS[k].offset).multiplyScalar(exploded ? 1 : 0);
+    g.position.lerp(tmp, 0.08);
+  });
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
